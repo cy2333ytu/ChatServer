@@ -1,4 +1,5 @@
 #include "../include/server/chatservice.h"
+#include "../include/server/redis/redis.h"
 #include "../include/server/friendmodel.h"
 #include "../include/public.h"
 #include <muduo/base/Logging.h>
@@ -16,14 +17,24 @@ namespace ccy
 
     ChatService::ChatService()
     {
-        _msgHandlerMap.insert({LOGIN_MSG, std::bind(&ChatService::login, this, std::placeholders::_1,
-                                                    std::placeholders::_2, std::placeholders::_3)});
+        _msgHandlerMap.insert({LOGIN_MSG, std::bind(&ChatService::login, this, _1, _2, _3)});
+        _msgHandlerMap.insert({LOGINOUT_MSG, std::bind(&ChatService::loginout, this, _1, _2, _3)});
+        _msgHandlerMap.insert({REG_MSG, std::bind(&ChatService::reg, this, _1, _2, _3)});
+        _msgHandlerMap.insert({ONE_CHAT_MSG, std::bind(&ChatService::oneChat, this, _1, _2, _3)});
+        _msgHandlerMap.insert({ADD_FRIEND_MSG, std::bind(&ChatService::addFriend, this, _1, _2, _3)});
 
-        _msgHandlerMap.insert({REG_MSG, std::bind(&ChatService::reg, this, std::placeholders::_1,
-                                                  std::placeholders::_2, std::placeholders::_3)});
+        _msgHandlerMap.insert({CREATE_GROUP_MSG, std::bind(&ChatService::createGroup, this, _1, _2, _3)});
+        _msgHandlerMap.insert({ADD_GROUP_MSG, std::bind(&ChatService::addGroup, this, _1, _2, _3)});
+        _msgHandlerMap.insert({GROUP_CHAT_MSG, std::bind(&ChatService::groupChat, this, _1, _2, _3)});
 
-        _msgHandlerMap.insert({ONE_CHAT_MSG, std::bind(&ChatService::oneChat, this, std::placeholders::_1,
-                                                       std::placeholders::_2, std::placeholders::_3)});
+        if (_redis.connect())
+        {
+            _redis.init_notify_handler(std::bind(&ChatService::handleRedisSubscribeMessage, this, _1, _2));
+        }
+    }
+    void ChatService::reset()
+    {
+        _userModel.resetState();
     }
 
     MsgHandler ChatService::getHandler(int msgId)
@@ -92,7 +103,35 @@ namespace ccy
                     resposne["friends"] = vec2;
                 }
 
-                conn->send(resposne.dump());
+                std::vector<Group> groupuserVec = _groupModel.queryGroups(id);
+                if (!groupuserVec.empty())
+                {
+                    // group:[{groupid:[xxx, xxx, xxx, xxx]}]
+                    vector<string> groupV;
+                    for (Group &group : groupuserVec)
+                    {
+                        json grpjson;
+                        grpjson["id"] = group.getId();
+                        grpjson["groupname"] = group.getName();
+                        grpjson["groupdesc"] = group.getDesc();
+                        vector<string> userV;
+                        for (GroupUser &user : group.getUsers())
+                        {
+                            json js;
+                            js["id"] = user.getId();
+                            js["name"] = user.getName();
+                            js["state"] = user.getState();
+                            js["role"] = user.getRole();
+                            userV.push_back(js.dump());
+                        }
+                        grpjson["users"] = userV;
+                        groupV.push_back(grpjson.dump());
+                    }
+
+                    response["groups"] = groupV;
+                }
+
+                conn->send(response.dump());
             }
         }
         else
@@ -131,6 +170,22 @@ namespace ccy
             conn->send(resposne.dump());
         }
     }
+    void ChatService::loginout(const TcpConnectionPtr &conn, json &js, Timestamp time)
+    {
+        int userid = js["id"].get<int>();
+        {
+            std::lock_guard<std::mutex> lock(_connMutex);
+            auto it = _userConnMap.find(userid);
+            if (it != _userConnMap.end())
+            {
+                _userConnMap.erase(it);
+            }
+        }
+        _redis.unsubscribe(userid);
+        User user(userid, "", "", "offline");
+        _userModel.updateState(user);
+    }
+
     void ChatService::clientCloseException(const TcpConnectionPtr &conn)
     {
         User user;
@@ -146,6 +201,8 @@ namespace ccy
                 }
             }
         }
+        _redis.unsubscribe(user.getId());
+
         if (user.getId() != -1)
         {
 
@@ -153,6 +210,7 @@ namespace ccy
             _userModel.updateState(user);
         }
     }
+
     void ChatService::oneChat(const TcpConnectionPtr &conn, json &js, Timestamp time)
     {
         int toid = js["to"].get<int>();
@@ -165,6 +223,14 @@ namespace ccy
                 return;
             }
         }
+
+        User user = _userModel.query(toid);
+        if (user.getState() == "online")
+        {
+            _redis.publish(toid, js.dump());
+            return;
+        }
+
         _offlineMsgModel.insert(toid, js.dump());
     }
     void ChatService::addFriend(const TcpConnectionPtr &conn, json &js, Timestamp time)
@@ -173,5 +239,70 @@ namespace ccy
         int friendid = js["friendid"].get<int>();
 
         _friendModel.insert(userid, friendid);
+    }
+    void ChatService::createGroup(const TcpConnectionPtr &conn, json &js, Timestamp time)
+    {
+        int userid = js["id"].get<int>();
+        string name = js["groupname"];
+        string desc = js["groupdesc"];
+
+        // store new group info
+        Group group(-1, name, desc);
+        if (_groupModel.createGroup(group))
+        {
+            // store the info of creator of group
+            _groupModel.addGroup(userid, group.getId(), "creator");
+        }
+    }
+
+    void ChatService::addGroup(const TcpConnectionPtr &conn, json &js, Timestamp time)
+    {
+        int userid = js["id"].get<int>();
+        int groupid = js["groupid"].get<int>();
+        _groupModel.addGroup(userid, groupid, "normal");
+    }
+    void ChatService::groupChat(const TcpConnectionPtr &conn, json &js, Timestamp time)
+    {
+        int userid = js["id"].get<int>();
+        int groupid = js["groupid"].get<int>();
+        vector<int> useridVec = _groupModel.queryGroupUsers(userid, groupid);
+
+        lock_guard<mutex> lock(_connMutex);
+        for (int id : useridVec)
+        {
+            auto it = _userConnMap.find(id);
+            if (it != _userConnMap.end())
+            {
+                // send msg to another
+                it->second->send(js.dump());
+            }
+            else
+            {
+                // query if online
+                User user = _userModel.query(id);
+                if (user.getState() == "online")
+                {
+                    _redis.publish(id, js.dump());
+                }
+                else
+                {
+                    // store offlin msg
+                    _offlineMsgModel.insert(id, js.dump());
+                }
+            }
+        }
+    }
+    void ChatService::handleRedisSubscribeMessage(int userid, string msg)
+    {
+        lock_guard<mutex> lock(_connMutex);
+        auto it = _userConnMap.find(userid);
+        if (it != _userConnMap.end())
+        {
+            it->second->send(msg);
+            return;
+        }
+
+        // store offline msg
+        _offlineMsgModel.insert(userid, msg);
     }
 }

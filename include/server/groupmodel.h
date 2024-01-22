@@ -7,7 +7,7 @@
 
 namespace ccy
 {
-    class GROUPMODEL_H
+    class GroupModel
     {
         public:
             bool createGroup(Group &group);
