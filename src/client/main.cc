@@ -1,7 +1,8 @@
+#include "group.hpp"
+#include "user.hpp"
+#include "public.hpp"
 #include "json.hpp"
-#include "group.h"
-#include "user.h"
-#include "public.h"
+
 #include <iostream>
 #include <thread>
 #include <string>
@@ -18,14 +19,15 @@
 #include <arpa/inet.h>
 #include <semaphore.h>
 #include <atomic>
-
-using namespace ccy;
 using namespace std;
 using json = nlohmann::json;
-// Record information of the currently logged-in user
+using namespace ccy;
+// Record information of the current logged-in user
 User g_currentUser;
+
 // Record the friend list information of the currently logged-in user
 vector<User> g_currentUserFriendList;
+
 // Record the group list information of the currently logged-in user
 vector<Group> g_currentUserGroupList;
 
@@ -34,40 +36,42 @@ bool isMainMenuRunning = false;
 
 // Semaphore for communication between read and write threads
 sem_t rwsem;
+
 // Record login status
 atomic_bool g_isLoginSuccess{false};
 
 // Receive thread
 void readTaskHandler(int clientfd);
-// Get system time (needed for adding timestamp to chat messages)
+// Get system time (used for adding time information to chat messages)
 string getCurrentTime();
 // Main chat menu program
 void mainMenu(int);
 // Display basic information of the currently logged-in user
 void showCurrentUserData();
 
-// Chat client program implementation, main thread for sending messages, and sub-thread for receiving messages
+// Chat client program implementation, main thread used for sending messages,
+// and a child thread used for receiving messages
 int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        cerr << "command invalid! example: ./ChatClient 127.0.0.1 6000" << endl;
+        cerr << "Command invalid! Example: ./ChatClient 127.0.0.1 6000" << endl;
         exit(-1);
     }
 
-    // 解析通过命令行参数传递的ip和port
+    // Parse IP and port passed through command line arguments
     char *ip = argv[1];
     uint16_t port = atoi(argv[2]);
 
-    // 创建client端的socket
+    // Create client socket
     int clientfd = socket(AF_INET, SOCK_STREAM, 0);
     if (-1 == clientfd)
     {
-        cerr << "socket create error" << endl;
+        cerr << "Socket create error" << endl;
         exit(-1);
     }
 
-    // 填写client需要连接的server信息ip+port
+    // Fill in server information (IP + port) that the client needs to connect to
     sockaddr_in server;
     memset(&server, 0, sizeof(sockaddr_in));
 
@@ -75,34 +79,34 @@ int main(int argc, char **argv)
     server.sin_port = htons(port);
     server.sin_addr.s_addr = inet_addr(ip);
 
-    // client和server进行连接
+    // Connect the client to the server
     if (-1 == connect(clientfd, (sockaddr *)&server, sizeof(sockaddr_in)))
     {
-        cerr << "connect server error" << endl;
+        cerr << "Connect server error" << endl;
         close(clientfd);
         exit(-1);
     }
 
-    // 初始化读写线程通信用的信号量
+    // Initialize semaphore for communication between read and write threads
     sem_init(&rwsem, 0, 0);
 
-    // 连接服务器成功，启动接收子线程
-    std::thread readTask(readTaskHandler, clientfd); // pthread_create
-    readTask.detach();                               // pthread_detach
+    // Connection to the server successful, start the receiving thread
+    std::thread readTask(readTaskHandler, clientfd);
+    readTask.detach();
 
-    // main thread for receiving user input and sending data
+    // Main thread responsible for receiving user input and sending data
     for (;;)
     {
-        // Display main menu options
+        // Display main menu options: login, register, quit
         cout << "========================" << endl;
-        cout << "1. login" << endl;
-        cout << "2. register" << endl;
-        cout << "3. quit" << endl;
+        cout << "1. Login" << endl;
+        cout << "2. Register" << endl;
+        cout << "3. Quit" << endl;
         cout << "========================" << endl;
-        cout << "choice:";
+        cout << "Choice:";
         int choice = 0;
         cin >> choice;
-        cin.get(); // Read off any remaining newline character in the buffer
+        cin.get(); // Read and discard any remaining newline characters in the buffer
 
         switch (choice)
         {
@@ -110,10 +114,10 @@ int main(int argc, char **argv)
         {
             int id = 0;
             char pwd[50] = {0};
-            cout << "userid:";
+            cout << "UserID:";
             cin >> id;
-            cin.get(); // Read off any remaining newline character in the buffer
-            cout << "userpassword:";
+            cin.get(); // Read and discard any remaining newline characters in the buffer
+            cout << "User Password:";
             cin.getline(pwd, 50);
 
             json js;
@@ -127,14 +131,14 @@ int main(int argc, char **argv)
             int len = send(clientfd, request.c_str(), strlen(request.c_str()) + 1, 0);
             if (len == -1)
             {
-                cerr << "send login msg error:" << request << endl;
+                cerr << "Send login msg error:" << request << endl;
             }
 
-            sem_wait(&rwsem); // Wait for the semaphore, notified by the sub-thread after handling the login response
+            sem_wait(&rwsem); // Wait for the semaphore, notified by the child thread after processing the login response
 
             if (g_isLoginSuccess)
             {
-                // Enter the main chat menu page
+                // Enter the main chat menu
                 isMainMenuRunning = true;
                 mainMenu(clientfd);
             }
@@ -144,9 +148,9 @@ int main(int argc, char **argv)
         {
             char name[50] = {0};
             char pwd[50] = {0};
-            cout << "username:";
+            cout << "Username:";
             cin.getline(name, 50);
-            cout << "userpassword:";
+            cout << "User Password:";
             cin.getline(pwd, 50);
 
             json js;
@@ -158,10 +162,10 @@ int main(int argc, char **argv)
             int len = send(clientfd, request.c_str(), strlen(request.c_str()) + 1, 0);
             if (len == -1)
             {
-                cerr << "send reg msg error:" << request << endl;
+                cerr << "Send reg msg error:" << request << endl;
             }
 
-            sem_wait(&rwsem); // Wait for the semaphore, sub-thread notifies after handling the registration message
+            sem_wait(&rwsem); // Wait for the semaphore, notified by the child thread after processing the registration response
         }
         break;
         case 3: // Quit business
@@ -169,7 +173,7 @@ int main(int argc, char **argv)
             sem_destroy(&rwsem);
             exit(0);
         default:
-            cerr << "invalid input!" << endl;
+            cerr << "Invalid input!" << endl;
             break;
         }
     }
@@ -177,21 +181,21 @@ int main(int argc, char **argv)
     return 0;
 }
 
-// Handle the response logic for registration
+// Process response logic for registration
 void doRegResponse(json &responsejs)
 {
     if (0 != responsejs["errno"].get<int>()) // Registration failed
     {
-        cerr << "name is already exist, register error!" << endl;
+        cerr << "Name is already exist, register error!" << endl;
     }
-    else // Registration succeeded
+    else // Registration successful
     {
-        cout << "name register success, userid is " << responsejs["id"]
+        cout << "Name register success, UserID is " << responsejs["id"]
              << ", do not forget it!" << endl;
     }
 }
 
-// Handle the response logic for login
+// Process response logic for login
 void doLoginResponse(json &responsejs)
 {
     if (0 != responsejs["errno"].get<int>()) // Login failed
@@ -199,13 +203,13 @@ void doLoginResponse(json &responsejs)
         cerr << responsejs["errmsg"] << endl;
         g_isLoginSuccess = false;
     }
-    else // Login succeeded
+    else // Login successful
     {
-        // Record the current user's id and name
+        // Record the current user's ID and name
         g_currentUser.setId(responsejs["id"].get<int>());
         g_currentUser.setName(responsejs["name"]);
 
-        // Record the current user's friend list information
+        // Record the friend list information of the current user
         if (responsejs.contains("friends"))
         {
             // Initialize
@@ -223,7 +227,7 @@ void doLoginResponse(json &responsejs)
             }
         }
 
-        // Record the current user's group list information
+        // Record the group list information of the current user
         if (responsejs.contains("groups"))
         {
             // Initialize
@@ -254,10 +258,10 @@ void doLoginResponse(json &responsejs)
             }
         }
 
-        // Display basic information of the logged-in user
+        // Show basic information of the logged-in user
         showCurrentUserData();
 
-        // Display offline messages for the current user (individual chat messages or group messages)
+        // Display offline messages for the current user - personal chat messages or group messages
         if (responsejs.contains("offlinemsg"))
         {
             vector<string> vec = responsejs["offlinemsg"];
@@ -282,13 +286,13 @@ void doLoginResponse(json &responsejs)
     }
 }
 
-// Receive thread
+// Subthread - Receive thread
 void readTaskHandler(int clientfd)
 {
     for (;;)
     {
         char buffer[1024] = {0};
-        int len = recv(clientfd, buffer, 1024, 0); // Blocked here
+        int len = recv(clientfd, buffer, 1024, 0); // Blocking
         if (-1 == len || 0 == len)
         {
             close(clientfd);
@@ -314,7 +318,7 @@ void readTaskHandler(int clientfd)
 
         if (LOGIN_MSG_ACK == msgtype)
         {
-            doLoginResponse(js); // Process business logic for login response
+            doLoginResponse(js); // Process the business logic of login response
             sem_post(&rwsem);    // Notify the main thread that login result processing is complete
             continue;
         }
@@ -331,9 +335,9 @@ void readTaskHandler(int clientfd)
 // Display basic information of the currently logged-in user
 void showCurrentUserData()
 {
-    cout << "======================login user======================" << endl;
-    cout << "current login user => id:" << g_currentUser.getId() << " name:" << g_currentUser.getName() << endl;
-    cout << "----------------------friend list---------------------" << endl;
+    cout << "======================Login User======================" << endl;
+    cout << "Current login user => ID:" << g_currentUser.getId() << " Name:" << g_currentUser.getName() << endl;
+    cout << "----------------------Friend List---------------------" << endl;
     if (!g_currentUserFriendList.empty())
     {
         for (User &user : g_currentUserFriendList)
@@ -341,7 +345,7 @@ void showCurrentUserData()
             cout << user.getId() << " " << user.getName() << " " << user.getState() << endl;
         }
     }
-    cout << "----------------------group list----------------------" << endl;
+    cout << "----------------------Group List----------------------" << endl;
     if (!g_currentUserGroupList.empty())
     {
         for (Group &group : g_currentUserGroupList)
@@ -358,9 +362,76 @@ void showCurrentUserData()
 }
 
 // "help" command handler
-void help(int fd, string str)
+void help(int fd = 0, string str = "");
+// "chat" command handler
+void chat(int, string);
+// "addfriend" command handler
+void addfriend(int, string);
+// "creategroup" command handler
+void creategroup(int, string);
+// "addgroup" command handler
+void addgroup(int, string);
+// "groupchat" command handler
+void groupchat(int, string);
+// "loginout" command handler
+void loginout(int, string);
+
+// System-supported client command list
+unordered_map<string, string> commandMap = {
+    {"help", "Display all supported commands, format: help"},
+    {"chat", "One-to-one chat, format: chat:friendid:message"},
+    {"addfriend", "Add friend, format: addfriend:friendid"},
+    {"creategroup", "Create group, format: creategroup:groupname:groupdesc"},
+    {"addgroup", "Join group, format: addgroup:groupid"},
+    {"groupchat", "Group chat, format: groupchat:groupid:message"},
+    {"loginout", "Logout, format: loginout"}};
+
+// Registering client command handlers
+unordered_map<string, function<void(int, string)>> commandHandlerMap = {
+    {"help", help},
+    {"chat", chat},
+    {"addfriend", addfriend},
+    {"creategroup", creategroup},
+    {"addgroup", addgroup},
+    {"groupchat", groupchat},
+    {"loginout", loginout}};
+
+// Main chat menu program
+void mainMenu(int clientfd)
 {
-    cout << "show command list >>> " << endl;
+    help();
+
+    char buffer[1024] = {0};
+    while (isMainMenuRunning)
+    {
+        cin.getline(buffer, 1024);
+        string commandbuf(buffer);
+        string command; // Store command
+        int idx = commandbuf.find(":");
+        if (-1 == idx)
+        {
+            command = commandbuf;
+        }
+        else
+        {
+            command = commandbuf.substr(0, idx);
+        }
+        auto it = commandHandlerMap.find(command);
+        if (it == commandHandlerMap.end())
+        {
+            cerr << "Invalid input command!" << endl;
+            continue;
+        }
+
+        // Call the event handling callback for the respective command, mainMenu is closed to modification, adding new functionality does not require modifying this function
+        it->second(clientfd, commandbuf.substr(idx + 1, commandbuf.size() - idx)); // Call the command processing method
+    }
+}
+
+// "help" command handler
+void help(int, string)
+{
+    cout << "Show command list >>> " << endl;
     for (auto &p : commandMap)
     {
         cout << p.first << " : " << p.second << endl;
@@ -381,7 +452,7 @@ void addfriend(int clientfd, string str)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send addfriend msg error -> " << buffer << endl;
+        cerr << "Send addfriend msg error -> " << buffer << endl;
     }
 }
 
@@ -391,7 +462,7 @@ void chat(int clientfd, string str)
     int idx = str.find(":"); // friendid:message
     if (-1 == idx)
     {
-        cerr << "chat command invalid!" << endl;
+        cerr << "Chat command invalid!" << endl;
         return;
     }
 
@@ -410,17 +481,17 @@ void chat(int clientfd, string str)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send chat msg error -> " << buffer << endl;
+        cerr << "Send chat msg error -> " << buffer << endl;
     }
 }
 
-// "creategroup" command handler  groupname:groupdesc
+// "creategroup" command handler groupname:groupdesc
 void creategroup(int clientfd, string str)
 {
     int idx = str.find(":");
     if (-1 == idx)
     {
-        cerr << "creategroup command invalid!" << endl;
+        cerr << "Creategroup command invalid!" << endl;
         return;
     }
 
@@ -437,7 +508,7 @@ void creategroup(int clientfd, string str)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send creategroup msg error -> " << buffer << endl;
+        cerr << "Send creategroup msg error -> " << buffer << endl;
     }
 }
 
@@ -454,17 +525,17 @@ void addgroup(int clientfd, string str)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send addgroup msg error -> " << buffer << endl;
+        cerr << "Send addgroup msg error -> " << buffer << endl;
     }
 }
 
-// "groupchat" command handler   groupid:message
+// "groupchat" command handler groupid:message
 void groupchat(int clientfd, string str)
 {
     int idx = str.find(":");
     if (-1 == idx)
     {
-        cerr << "groupchat command invalid!" << endl;
+        cerr << "Groupchat command invalid!" << endl;
         return;
     }
 
@@ -483,7 +554,7 @@ void groupchat(int clientfd, string str)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send groupchat msg error -> " << buffer << endl;
+        cerr << "Send groupchat msg error -> " << buffer << endl;
     }
 }
 
@@ -498,7 +569,7 @@ void loginout(int clientfd, string)
     int len = send(clientfd, buffer.c_str(), strlen(buffer.c_str()) + 1, 0);
     if (-1 == len)
     {
-        cerr << "send loginout msg error -> " << buffer << endl;
+        cerr << "Send loginout msg error -> " << buffer << endl;
     }
     else
     {
