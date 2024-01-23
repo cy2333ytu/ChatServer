@@ -49,7 +49,46 @@ void showCurrentUserData();
 // Chat client program implementation, main thread for sending messages, and sub-thread for receiving messages
 int main(int argc, char **argv)
 {
-    // ... (unchanged code)
+    if (argc < 3)
+    {
+        cerr << "command invalid! example: ./ChatClient 127.0.0.1 6000" << endl;
+        exit(-1);
+    }
+
+    // 解析通过命令行参数传递的ip和port
+    char *ip = argv[1];
+    uint16_t port = atoi(argv[2]);
+
+    // 创建client端的socket
+    int clientfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == clientfd)
+    {
+        cerr << "socket create error" << endl;
+        exit(-1);
+    }
+
+    // 填写client需要连接的server信息ip+port
+    sockaddr_in server;
+    memset(&server, 0, sizeof(sockaddr_in));
+
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+    server.sin_addr.s_addr = inet_addr(ip);
+
+    // client和server进行连接
+    if (-1 == connect(clientfd, (sockaddr *)&server, sizeof(sockaddr_in)))
+    {
+        cerr << "connect server error" << endl;
+        close(clientfd);
+        exit(-1);
+    }
+
+    // 初始化读写线程通信用的信号量
+    sem_init(&rwsem, 0, 0);
+
+    // 连接服务器成功，启动接收子线程
+    std::thread readTask(readTaskHandler, clientfd); // pthread_create
+    readTask.detach();                               // pthread_detach
 
     // main thread for receiving user input and sending data
     for (;;)
@@ -92,8 +131,8 @@ int main(int argc, char **argv)
             }
 
             sem_wait(&rwsem); // Wait for the semaphore, notified by the sub-thread after handling the login response
-                
-            if (g_isLoginSuccess) 
+
+            if (g_isLoginSuccess)
             {
                 // Enter the main chat menu page
                 isMainMenuRunning = true;
@@ -121,7 +160,7 @@ int main(int argc, char **argv)
             {
                 cerr << "send reg msg error:" << request << endl;
             }
-            
+
             sem_wait(&rwsem); // Wait for the semaphore, sub-thread notifies after handling the registration message
         }
         break;
@@ -148,7 +187,7 @@ void doRegResponse(json &responsejs)
     else // Registration succeeded
     {
         cout << "name register success, userid is " << responsejs["id"]
-                << ", do not forget it!" << endl;
+             << ", do not forget it!" << endl;
     }
 }
 
@@ -229,12 +268,12 @@ void doLoginResponse(json &responsejs)
                 if (ONE_CHAT_MSG == js["msgid"].get<int>())
                 {
                     cout << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
-                            << " said: " << js["msg"].get<string>() << endl;
+                         << " said: " << js["msg"].get<string>() << endl;
                 }
                 else
                 {
                     cout << "Group message [" << js["groupid"] << "]:" << js["time"].get<string>() << " [" << js["id"] << "]" << js["name"].get<string>()
-                            << " said: " << js["msg"].get<string>() << endl;
+                         << " said: " << js["msg"].get<string>() << endl;
                 }
             }
         }
@@ -249,7 +288,7 @@ void readTaskHandler(int clientfd)
     for (;;)
     {
         char buffer[1024] = {0};
-        int len = recv(clientfd, buffer, 1024, 0);  // Blocked here
+        int len = recv(clientfd, buffer, 1024, 0); // Blocked here
         if (-1 == len || 0 == len)
         {
             close(clientfd);
@@ -283,7 +322,7 @@ void readTaskHandler(int clientfd)
         if (REG_MSG_ACK == msgtype)
         {
             doRegResponse(js);
-            sem_post(&rwsem);    // Notify the main thread that registration result processing is complete
+            sem_post(&rwsem); // Notify the main thread that registration result processing is complete
             continue;
         }
     }
@@ -464,7 +503,7 @@ void loginout(int clientfd, string)
     else
     {
         isMainMenuRunning = false;
-    }   
+    }
 }
 
 // Get system time (chat messages need to add timestamp information)
